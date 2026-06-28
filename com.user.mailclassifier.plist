@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.mailclassifier</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/ten/mail-classifier/classify_mail.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ten/mail-classifier</string>
+
+    <!-- launchd는 최소 PATH만 주므로 homebrew(omlx) 경로를 추가 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- 하루 1번 실행: 매일 9시 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>9</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <!-- 노트북이 자거나 꺼져 있어서 시간을 놓쳤다면 깨어난 직후 1회 실행 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ten/mail-classifier/run.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ten/mail-classifier/run.err.log</string>
+</dict>
+</plist>

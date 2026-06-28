@@ -1,0 +1,30 @@
+{
+  "imap_host": "imap.naver.com",
+  "imap_port": 993,
+  "username": "네이버아이디",
+  "app_password": "네이버_앱비밀번호_또는_IMAP비밀번호",
+
+  "omlx_url": "http://127.0.0.1:8000/v1",
+  "omlx_settings_path": "~/.omlx/settings.json",
+  "api_key": "",
+  "omlx_bin": "/opt/homebrew/bin/omlx",
+  "manage_server": true,
+
+  "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+  "source_folder": "INBOX",
+  "max_mails_per_run": 50,
+  "body_chars": 800,
+
+  "categories": {
+    "광고": "광고",
+    "결제": "결제",
+    "보안": "보안",
+    "고지": "고지",
+    "업무": "업무",
+    "개인": "개인",
+    "기타": "기타"
+  },
+  "read_categories": ["광고", "고지"],
+
+  "dry_run": true
+}

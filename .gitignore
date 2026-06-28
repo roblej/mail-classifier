@@ -1,0 +1,18 @@
+# 민감 정보 — GitHub에 올리지 말 것
+# (주석은 반드시 별도 줄에! git은 줄 끝 주석을 지원하지 않음)
+
+# 네이버 앱비밀번호 포함
+config.json
+
+# 실제 메일 제목/발신자 (사생활)
+mails_dump.txt
+
+# 로그 — 메일 제목 포함 가능
+*.log
+run.log
+run.err.log
+
+# macOS / 파이썬 캐시
+.DS_Store
+__pycache__/
+*.pyc
