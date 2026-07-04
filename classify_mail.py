@@ -2,23 +2,31 @@
 """필요할 때만 oMLX(로컬 LLM 서버)를 켜서 네이버 메일을 분류 → 폴더 이동.
 
 흐름(1회 실행):
-  omlx start  →  IMAP에서 안 읽은 메일 수집  →  oMLX OpenAI API로 분류
-  →  네이버 폴더로 이동  →  omlx stop (서버/모델 RAM 회수)
+  omlx serve(직접 자식 프로세스로 기동)  →  IMAP에서 안 읽은 메일 수집
+  →  oMLX OpenAI API로 분류  →  네이버 폴더로 이동
+  →  서버 프로세스 직접 종료(서버/모델 RAM 회수)
+
+서버는 GUI 앱/컨트롤 소켓에 의존하는 `omlx start/stop` 대신, 이 스크립트가
+직접 띄운 자식 프로세스다. 따라서 launchd가 잠자기 복귀 후 헤드리스로 실행돼
+GUI 앱이 없어도 종료가 보장된다(고아 서버가 남지 않음).
 
 의존성: 표준 라이브러리만 사용 (pip 설치 불필요). /usr/bin/python3 로 실행 가능.
 LLM은 oMLX HTTP 서버가 담당하므로 mlx 파이썬 패키지가 없어도 된다.
 """
+import atexit
 import base64
 import email
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 import imaplib
 import urllib.request
 from email.header import decode_header
+from urllib.parse import urlparse
 
 from rules import rule_classify
 
@@ -171,8 +179,52 @@ def classify(cfg, categories, subject, sender, body):
 
 
 # ------------------------- 서버 제어 -------------------------
-def omlx(cfg, *args):
-    subprocess.run([cfg.get("omlx_bin", "omlx"), *args], check=False)
+# GUI 앱/컨트롤 소켓에 의존하는 `omlx start/stop` 대신, `omlx serve`를 직접
+# 자식 프로세스로 띄운다. 새 세션(프로세스 그룹)으로 실행해 종료 시 서버가
+# 띄운 하위 프로세스까지 통째로 정리한다.
+_server_proc = None
+
+
+def start_server(cfg):
+    global _server_proc
+    u = urlparse(cfg["omlx_url"])
+    host = u.hostname or "127.0.0.1"
+    port = u.port or 8000
+    cmd = [cfg.get("omlx_bin", "omlx"), "serve", "--host", host, "--port", str(port)]
+    if cfg.get("api_key"):
+        cmd += ["--api-key", cfg["api_key"]]
+    # 서버 자체 로그는 ~/.omlx/logs/server.log 로 남으므로 표준출력은 버린다.
+    _server_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # 프로세스 그룹 리더 → killpg로 일괄 종료 가능
+    )
+    # 스크립트가 어떤 식으로 끝나든(정상 종료/예외/SIGTERM) 서버를 반드시 회수
+    atexit.register(stop_server)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    return _server_proc
+
+
+def stop_server(timeout=30):
+    global _server_proc
+    proc = _server_proc
+    if proc is None or proc.poll() is not None:
+        _server_proc = None
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)  # 프로세스 그룹 전체에 종료 신호
+    except ProcessLookupError:
+        _server_proc = None
+        return
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # 시간 내 안 죽으면 강제 종료
+        except ProcessLookupError:
+            pass
+    _server_proc = None
 
 
 def wait_ready(cfg, timeout=120):
@@ -188,6 +240,77 @@ def wait_ready(cfg, timeout=120):
     return False
 
 
+# ------------------------- IMAP 재접속 래퍼 -------------------------
+# 네이버 IMAP은 한 세션에서 FETCH를 연속으로 많이 날리면 연결을 끊는 경우가 있다
+# (ConnectionResetError / imaplib abort). 명령을 재시도로 감싸고, 연결이 끊기면
+# 자동으로 재접속 후 마지막에 선택했던 폴더를 다시 열고 같은 명령을 재시도한다.
+# UID 기반 명령이라 재접속해도 식별자가 안정적이라 안전하다.
+class IMAPClient:
+    # 이 예외들은 "연결이 끊겼다"는 신호 → 재접속 후 재시도. 프로토콜 NO/BAD
+    # (imaplib.IMAP4.error)는 논리 오류이므로 재시도 대상에서 제외한다.
+    _TRANSIENT = (imaplib.IMAP4.abort, OSError)
+
+    def __init__(self, cfg, retries=3):
+        self.cfg = cfg
+        self.retries = retries
+        self._conn = None
+        self._selected = None
+        self.connect()
+
+    def connect(self):
+        c = imaplib.IMAP4_SSL(self.cfg["imap_host"], self.cfg.get("imap_port", 993))
+        c.login(self.cfg["username"], self.cfg["app_password"])
+        self._conn = c
+        if self._selected:  # 재접속이면 이전에 열었던 폴더를 다시 선택
+            c.select(self._selected)
+
+    def reconnect(self):
+        try:
+            if self._conn is not None:
+                self._conn.logout()
+        except Exception:
+            pass
+        self._conn = None
+        self.connect()
+
+    def select(self, mailbox):
+        self._selected = mailbox
+        return self._conn.select(mailbox)
+
+    def _call(self, method, *args):
+        for attempt in range(1, self.retries + 1):
+            try:
+                return getattr(self._conn, method)(*args)
+            except self._TRANSIENT as e:
+                if attempt == self.retries:
+                    raise
+                wait = 2 * attempt
+                print("  ! IMAP %s 연결 끊김(%s) → %d초 후 재접속·재시도 %d/%d"
+                      % (method, e, wait, attempt, self.retries))
+                time.sleep(wait)
+                try:
+                    self.reconnect()
+                except self._TRANSIENT as re_err:
+                    print("  ! 재접속 실패(%s), 계속 재시도" % re_err)
+
+    def uid(self, *args):
+        return self._call("uid", *args)
+
+    def create(self, *args):
+        return self._call("create", *args)
+
+    def expunge(self, *args):
+        return self._call("expunge", *args)
+
+    def logout(self):
+        try:
+            if self._conn is not None:
+                self._conn.logout()
+        except Exception:
+            pass
+        self._conn = None
+
+
 # ------------------------- 메인 -------------------------
 def main():
     cfg = load_config()
@@ -196,17 +319,17 @@ def main():
     manage = cfg.get("manage_server", True)
 
     if manage:
-        print("[0/4] oMLX 서버 기동...")
-        omlx(cfg, "start", "--timeout", "120")
+        print("[0/4] oMLX 서버 기동(직접 자식 프로세스)...")
+        start_server(cfg)
         if not wait_ready(cfg):
+            stop_server()  # 준비 실패해도 띄운 서버는 회수하고 종료
             sys.exit("oMLX 서버가 준비되지 않았습니다.")
 
     M = None
     try:
         # --- 1. IMAP 수집 ---
         print("[1/4] 네이버 IMAP 접속...")
-        M = imaplib.IMAP4_SSL(cfg["imap_host"], cfg.get("imap_port", 993))
-        M.login(cfg["username"], cfg["app_password"])
+        M = IMAPClient(cfg)  # 연결 끊김 시 자동 재접속·재시도
         M.select(cfg.get("source_folder", "INBOX"))
 
         typ, data = M.uid("SEARCH", None, "UNSEEN")
@@ -279,7 +402,7 @@ def main():
                 pass
         if manage:
             print("\n[3/3] oMLX 서버 종료 → RAM 회수")
-            omlx(cfg, "stop")
+            stop_server()
     print("완료.")
 
 
