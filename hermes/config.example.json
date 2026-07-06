@@ -1,0 +1,27 @@
+{
+  "imap_host": "imap.naver.com",
+  "imap_port": 993,
+  "username": "네이버아이디",
+  "app_password": "네이버_앱비밀번호",
+
+  "api_url": "https://api.deepseek.com/v1",
+  "api_key": "",
+  "model": "deepseek-chat",
+
+  "source_folder": "INBOX",
+  "max_mails_per_run": 50,
+  "body_chars": 800,
+
+  "categories": {
+    "광고": "광고",
+    "결제": "결제",
+    "보안": "보안",
+    "고지": "고지",
+    "업무": "업무",
+    "개인": "개인",
+    "기타": "기타"
+  },
+  "read_categories": ["광고", "고지"],
+
+  "dry_run": true
+}
